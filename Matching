@@ -1,0 +1,125 @@
+---
+title: "Matching - Right Heart Catheterization"
+author: "Geyun Zhang"
+date: "7/7/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tibble)
+library(pander)
+library(knitr)
+library(kableExtra)
+library(htmltools)
+library(stringr)
+library(dplyr)
+library(fastDummies)
+library(tableone)
+library(Matching)
+library(MatchIt)
+library(DescTools)
+library(tidyverse)
+opts_chunk$set(echo = FALSE)
+
+# Function to plot the overlap between propensity score dist. of treated and untreated groups
+# 1. fill defines the column used as by variable; 
+# 2. alpha is transparent score; 
+# 3. position='identity' makes two groups overlap while 'stack' makes one group stack on top of the other group; 
+# 4. binwidth decides the width of each bin; 
+# 5. when use ..density.. with geom_histogram, values on y axis might go over 1 because the density is the area of each bar, but if you binwidth=1 then your y axis will show density - it is better to set y=..density..*binwidth
+plotoverlap<-function(data,title,alpha,binwidth){
+  ggplot(data,aes(pscore,fill=factor(swang1_RHC)))+
+    geom_histogram(alpha=alpha,position='identity',binwidth=binwidth,aes(y=..density..*binwidth))+
+    labs(x='Propensity Score',y='Density',fill='RHC Performed',title=title)+
+    theme(plot.title=element_text(face="bold",hjust=0.5),
+          legend.position=c(0.1,0.9))
+}
+
+
+# Function to create a TableOne and convert it to a formatted dataframe for kable output
+# 1. strata decides which column to use to stratify your data
+# 2. vars decides which attributes(columns) to compare
+# 3. as.data.frame will convert string-like columns to factor
+table1df<-function(vars,data,strata){
+  tableone<-CreateTableOne(vars=vars,strata=strata,data=data,test=FALSE) %>%
+    print(smd=TRUE) %>%
+    as.data.frame(stringsAsFactors=FALSE) %>%
+    rownames_to_column(var='Covariate') %>%
+    mutate(SMD=cell_spec(SMD,color=if_else(is.na(as.double(SMD)),'black',if_else(as.double(SMD)>0.1,'red','black'))))
+  return(tableone)
+}
+
+# Function to use kable to output a TableOne with colors
+# 1. escape enables kable() to output formatted data frame
+kable_tableone<-function(tableone,title,position,font_size){
+  kable(tableone,
+        escape=FALSE,
+        caption=title,
+        align='ccc') %>%
+    kable_styling(position=position,
+                  bootstrap_options=c('striped','boarded'),
+                  full_width=FALSE,
+                  font_size=font_size,
+                  latex_options='hold_position')
+}
+```
+#### 1. Import Right Heart Catheterization Data
+* The RHC dataset looks like this:
+```{r Loading Data}
+# Load data
+load(url("http://biostat.mc.vanderbilt.edu/wiki/pub/Main/DataSets/rhc.sav"))
+kable(head(rhc),align='clc',caption='<center><strong>Sample Data of Right Heart Catheterization</strong></center>') %>%
+  kable_styling(bootstrap_options=c('striped','hover','condensed'),
+                full_width=FALSE,font_size=11,position='center') %>%
+  scroll_box(width = '100%')
+
+rhc$swang1<-str_replace(rhc$swang1,' ','')
+
+# Check which columns have missing values
+Col_NA<-apply(rhc,2,function(x) sum(is.na(x))) %>% 
+          as.data.frame() %>%
+          subset(.>0) %>%
+          rownames()
+
+# Select variables that will be used in the analysis
+mydf<-rhc[c('cat1','sex','death','swang1','age','meanbp1')] %>%
+      dummy_cols(select_columns=c('cat1','sex','death','swang1'),remove_selected_columns=TRUE) %>%
+      subset(select=-c(cat1_Missing,sex_Male,death_No,swang1_NoRHC))
+
+colnames(mydf)<-names(mydf) %>% str_replace_all(c(' '='','/'=''))
+
+xvars<-mydf %>%
+       subset(select=-c(swang1_RHC,death_Yes)) %>%
+       names()
+```
+
+* **Columns that have missing values **
+  + `r Col_NA`
+
+#### 2. Matching Directly on Confunding Variables
+
+* **Columns to be used on matching **
+  + `r xvars`
+  
+* **Balance Assesments Pre-Matching vs. Post-Matching**
+```{r Assess Balance Pre-Matching,include=FALSE}
+# Look at table one before matching to see if the treated and untreated are balanced on the covariates
+table1_prematching<-table1df(vars=xvars,data=mydf,strata='swang1_RHC')
+```
+
+```{r Greedy Matching}
+# Perform greedy matching on Mahalanobis distance
+greedymatch<-Match(Tr=mydf$swang1_RHC,M=1,X=mydf[xvars])
+matched<-mydf[unlist(greedymatch[c('index.treated','index.control')]),]
+```
+
+```{r Assess Balance Post-Matching,include=FALSE}
+# Look at table one again after matching
+table1_postmatching<-table1df(vars=xvars,data=matched,strata='swang1_RHC')
+```
+
+```{r Compare Balance Assesment Results Pre-Matching vs. Post-Matching}
+
+kable_tableone(table1_prematching,'Pre-Matching Balance','float_left',12)
+kable_tableone(table1_postmatching,'Post-Matching Balance','right',12)
+```
